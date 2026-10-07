@@ -1,0 +1,7 @@
+[
+  {
+    "name": "CloudPolicyDemoRole",
+    "arn": "arn:aws:iam::123456789012:role/CloudPolicyDemoRole",
+    "attached_policies": ["AllowS3Read", "DenyS3Read"]
+  }
+]

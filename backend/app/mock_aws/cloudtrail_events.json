@@ -1,0 +1,5 @@
+[
+  { "EventName": "AssumeRole", "Username": "CloudPolicyDemoRole", "CloudTrailEvent": "{\"userIdentity\": {\"arn\": \"CloudPolicyDemoRole\"}}" },
+  { "EventName": "ListBuckets", "Username": "CloudPolicyDemoRole", "CloudTrailEvent": "{\"userIdentity\": {\"arn\": \"CloudPolicyDemoRole\"}}" },
+  { "EventName": "GetCallerIdentity", "Username": "CloudPolicyDemoRole", "CloudTrailEvent": "{\"userIdentity\": {\"arn\": \"CloudPolicyDemoRole\"}}" }
+]
