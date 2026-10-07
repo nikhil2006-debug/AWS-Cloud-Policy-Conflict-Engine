@@ -1,7 +1,10 @@
+import os 
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.engine import run_scan
 from app.database.local_store import get_store
@@ -82,3 +85,13 @@ def rollback(conflict_id: str):
     _log(item, "Original configuration restored from backup")
     get_store().put(item)
     return item
+
+
+# ---------- serve the React dashboard (keep this block at the very bottom) ----------
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "frontend")
+app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="ui")
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse("/ui/")

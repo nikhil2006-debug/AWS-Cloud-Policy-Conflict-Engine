@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AWS Cloud Policy Risk Engine</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --tx:#1b1f24; --mut:#667085; --bd:#e3e6ea; --pri:#2b5bd7; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --card:#1d2128; --tx:#e8eaed; --mut:#98a2b3; --bd:#2c323b; --pri:#6b92ff; } }
+  * { box-sizing:border-box }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--tx) }
+  header { display:flex; justify-content:space-between; align-items:center; padding:16px 24px; border-bottom:1px solid var(--bd); background:var(--card) }
+  h1 { font-size:20px; margin:0 }
+  main { max-width:1100px; margin:0 auto; padding:20px }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px }
+  .card { background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:14px 16px }
+  .card .n { font-size:28px; font-weight:600 }
+  .card .l { color:var(--mut); font-size:13px }
+  button { background:var(--pri); color:#fff; border:0; border-radius:8px; padding:9px 16px; font-size:14px; cursor:pointer }
+  button.sec { background:transparent; color:var(--tx); border:1px solid var(--bd) }
+  button:disabled { opacity:.5; cursor:not-allowed }
+  table { width:100%; border-collapse:collapse; background:var(--card) }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--bd); font-size:14px }
+  th { color:var(--mut); font-weight:500 }
+  tr.row { cursor:pointer }
+  tr.row:hover { background:rgba(127,127,127,.08) }
+  .badge { padding:2px 9px; border-radius:99px; font-size:12px; font-weight:600 }
+  .LOW { background:#d9f2e3; color:#146c3a } .MEDIUM { background:#fff0c2; color:#7a5a00 }
+  .HIGH { background:#ffd9cc; color:#a33a10 } .CRITICAL { background:#ffc9c9; color:#8b1111 }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px }
+  @media (max-width:760px) { .grid2 { grid-template-columns:1fr } }
+  pre { background:rgba(127,127,127,.1); padding:10px; border-radius:8px; overflow:auto; font-size:12px; margin:6px 0 0 }
+  .rec { border-left:4px solid var(--pri) }
+  .mut { color:var(--mut) }
+  h3 { margin:20px 0 8px; font-size:16px }
+  .bar { height:8px; background:var(--bd); border-radius:4px; overflow:hidden; margin:6px 0 }
+  .bar > div { height:100%; background:var(--pri) }
+  .err { color:#c0392b; margin:8px 0 }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+// ---------- helper: call the FastAPI backend (same origin, so no CORS problems) ----------
+async function api(path, method = "GET") {
+  const res = await fetch(path, { method });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || res.statusText);
+  }
+  return res.json();
+}
+
+function Badge({ s }) {
+  return <span className={"badge " + s}>{s}</span>;
+}
+
+function Header({ health }) {
+  return (
+    <header>
+      <h1>AWS Cloud Policy Risk Engine</h1>
+      <span className="mut">storage: {health ? health.storage : "..."}</span>
+    </header>
+  );
+}
+
+// ---------- CPDG drawing: role (top) -> allow (left) / deny (right) -> resource (bottom) ----------
+function Graph({ graph }) {
+  const W = 640, H = 330;
+  const pos = {};
+  const isPolicy = (n) => n.type === "IAM_POLICY";
+  const isRole = (n) => n.type === "IAM_ROLE" || n.type === "ANY_PRINCIPAL";
+  const roles = graph.nodes.filter(isRole);
+  const allows = graph.nodes.filter((n) => isPolicy(n) && n.effect === "Allow");
+  const denies = graph.nodes.filter((n) => isPolicy(n) && n.effect === "Deny");
+  const resources = graph.nodes.filter((n) => !isRole(n) && !isPolicy(n));
+
+  const place = (list, x, y) =>
+    list.forEach((n, i) => { pos[n.id] = { x: x + (i - (list.length - 1) / 2) * 160, y }; });
+  place(roles, W / 2, 40);
+  place(allows, W * 0.22, 160);
+  place(denies, W * 0.78, 160);
+  place(resources, W / 2, 290);
+
+  const color = (n) =>
+    n.effect === "Allow" ? "#1f9d55" : n.effect === "Deny" ? "#d64545" :
+    n.type === "S3_BUCKET" ? "#e08a1e" : "#2b5bd7";
+
+  return (
+    <svg viewBox={"0 0 " + W + " " + H} style={{ width: "100%", maxWidth: 720 }}>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="#888" />
+        </marker>
+      </defs>
+      {graph.edges.map((e, i) => {
+        const a = pos[e.source], b = pos[e.target];
+        if (!a || !b) return null;
+        const conflict = e.relation === "CONFLICTS_WITH";
+        const y1 = conflict ? a.y : a.y + 16;
+        const y2 = conflict ? b.y : b.y - 16;
+        const x1 = conflict ? a.x + 70 : a.x;
+        const x2 = conflict ? b.x - 70 : b.x;
+        return (
+          <g key={i}>
+            <line x1={x1} y1={y1} x2={x2} y2={y2}
+              stroke={conflict ? "#d64545" : "#888"} strokeWidth={conflict ? 2.5 : 1.3}
+              strokeDasharray={conflict ? "6 4" : ""} markerEnd={conflict ? "" : "url(#arrow)"} />
+            <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 + (conflict ? -8 : 0)} fontSize="10"
+              textAnchor="middle" fill={conflict ? "#d64545" : "#888"}>
+              {conflict ? "CONFLICTS_WITH" : e.relation}
+            </text>
+          </g>
+        );
+      })}
+      {graph.nodes.map((n) => {
+        const p = pos[n.id];
+        if (!p) return null;
+        const label = n.label.length > 22 ? n.label.slice(0, 21) + "..." : n.label;
+        return (
+          <g key={n.id}>
+            <rect x={p.x - 70} y={p.y - 16} width="140" height="32" rx="8" fill={color(n)} />
+            <text x={p.x} y={p.y + 4} fontSize="11" fill="#fff" textAnchor="middle">{label}</text>
+            <text x={p.x} y={p.y + 30} fontSize="9" fill="#888" textAnchor="middle">{n.type}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ---------- conflict details page ----------
+function Details({ id, health, onBack, onChange }) {
+  const [c, setC] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api("/conflicts/" + id).then(setC).catch((e) => setErr(e.message));
+  }, [id]);
+
+  async function act(what) {
+    try {
+      setC(await api("/conflicts/" + id + "/" + what, "POST"));
+      setErr("");
+      onChange();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  if (!c) return (<><Header health={health} /><main>{err || "Loading..."}</main></>);
+  const rec = c.mira.recommended;
+
+  return (
+    <>
+      <Header health={health} />
+      <main>
+        <button className="sec" onClick={onBack}>&larr; Back to dashboard</button>
+        <h2>{c.conflict_id} <Badge s={c.severity} /></h2>
+
+        <div className="cards">
+          <div className="card"><div className="l">Type</div><div>IAM Allow / Explicit Deny ({c.coverage})</div></div>
+          <div className="card"><div className="l">Principal</div><div>{c.principal}</div></div>
+          <div className="card"><div className="l">Resource</div><div>{c.resource_name}</div></div>
+          <div className="card"><div className="l">Action</div><div>{c.action}</div></div>
+          <div className="card"><div className="l">Risk score</div><div className="n">{c.risk_score}/100</div></div>
+          <div className="card"><div className="l">Status</div><div>{c.status}</div></div>
+        </div>
+
+        <h3>Risk breakdown <span className="mut">(0.35 security + 0.25 criticality + 0.20 usage + 0.20 dependency)</span></h3>
+        <div className="grid2">
+          {Object.entries(c.components).map(([k, v]) => (
+            <div className="card" key={k}>
+              <div className="l">{k} (weight {c.weights[k]})</div>
+              <div className="bar"><div style={{ width: v + "%" }} /></div>
+              <div>{v}/100</div>
+            </div>
+          ))}
+        </div>
+
+        <h3>Conflicting policies</h3>
+        <div className="grid2">
+          {[["ALLOW", c.allow], ["DENY", c.deny]].map(([label, p]) => (
+            <div className="card" key={label}>
+              <b style={{ color: label === "ALLOW" ? "#1f9d55" : "#d64545" }}>{label} - {p.policy_id}</b>
+              <pre>{JSON.stringify({ policy: p.policy_name, actions: p.actions, resources: p.resources, condition: p.condition }, null, 2)}</pre>
+            </div>
+          ))}
+        </div>
+
+        <h3>Cloud Policy Dependency Graph (CPDG)</h3>
+        <div className="card"><Graph graph={c.graph} /></div>
+
+        <h3>MIRA - candidate resolutions</h3>
+        <table>
+          <thead>
+            <tr><th>#</th><th>Strategy</th><th>Impact</th><th>Paths / Deps / Disruption / Exposure</th><th>Feasible</th></tr>
+          </thead>
+          <tbody>
+            {c.mira.candidates.map((x) => (
+              <tr key={x.id} style={rec && x.id === rec.id ? { fontWeight: 600 } : {}}>
+                <td>{x.id}</td>
+                <td>{x.strategy}{rec && x.id === rec.id ? " (recommended)" : ""}</td>
+                <td>{x.impact_score}</td>
+                <td>{Object.values(x.breakdown).join(" / ")}</td>
+                <td>{x.feasible ? "yes" : "no - weakens security"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div className="card rec" style={{ marginTop: 12 }}>
+          <div className="l">Recommended resolution - estimated impact {c.impact_score}/100</div>
+          <div>{c.recommendation}</div>
+          <div className="mut" style={{ marginTop: 6 }}>{c.reason}</div>
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <button disabled={c.status === "APPLIED_SIMULATED"} onClick={() => act("apply")}>
+              Approve and apply (simulated)
+            </button>
+            <button className="sec" disabled={c.status !== "APPLIED_SIMULATED"} onClick={() => act("rollback")}>
+              Rollback
+            </button>
+          </div>
+          {err && <div className="err">{err}</div>}
+        </div>
+
+        {c.history.length > 0 && (
+          <>
+            <h3>History</h3>
+            <div className="card">
+              {c.history.map((h, i) => (
+                <div key={i}>{new Date(h.at).toLocaleString()} - {h.event}</div>
+              ))}
+            </div>
+          </>
+        )}
+      </main>
+    </>
+  );
+}
+
+// ---------- main dashboard ----------
+function App() {
+  const [list, setList] = useState([]);
+  const [summary, setSummary] = useState({});
+  const [selected, setSelected] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [health, setHealth] = useState(null);
+
+  function refresh() {
+    return Promise.all([api("/conflicts"), api("/resources")])
+      .then(([l, s]) => { setList(l); setSummary(s); setErr(""); })
+      .catch((e) => setErr("Cannot reach backend: " + e.message));
+  }
+
+  useEffect(() => {
+    refresh();
+    api("/health").then(setHealth).catch(() => {});
+  }, []);
+
+  async function scan() {
+    setBusy(true);
+    setErr("");
+    try {
+      await api("/scan", "POST");
+      await refresh();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setBusy(false);
+  }
+
+  if (selected) {
+    return <Details id={selected} health={health} onBack={() => setSelected(null)} onChange={refresh} />;
+  }
+
+  const highRisk = list.filter((c) => c.severity === "HIGH" || c.severity === "CRITICAL").length;
+
+  return (
+    <>
+      <Header health={health} />
+      <main>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <span className="mut">
+            {summary.scanned_at ? "Last scan: " + new Date(summary.scanned_at).toLocaleString() : "No scan yet in this session"}
+          </span>
+          <button onClick={scan} disabled={busy}>{busy ? "Scanning..." : "SCAN AWS ENVIRONMENT"}</button>
+        </div>
+        {err && <div className="err">{err}</div>}
+
+        <div className="cards">
+          <div className="card"><div className="n">{summary.resources_discovered ?? "-"}</div><div className="l">Total resources</div></div>
+          <div className="card"><div className="n">{summary.policies_analyzed ?? "-"}</div><div className="l">Policies analyzed</div></div>
+          <div className="card"><div className="n">{list.length}</div><div className="l">Conflicts detected</div></div>
+          <div className="card"><div className="n">{highRisk}</div><div className="l">High-risk conflicts</div></div>
+        </div>
+
+        <table>
+          <thead>
+            <tr><th>Conflict</th><th>Type</th><th>Resource</th><th>Severity</th><th>Risk</th><th>Impact</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {list.length === 0 && (<tr><td colSpan="7" className="mut">No conflicts stored. Click SCAN.</td></tr>)}
+            {list.map((c) => (
+              <tr className="row" key={c.conflict_id} onClick={() => setSelected(c.conflict_id)}>
+                <td>{c.conflict_id}</td>
+                <td>ALLOW / DENY</td>
+                <td>{c.resource_name}</td>
+                <td><Badge s={c.severity} /></td>
+                <td>{c.risk_score}</td>
+                <td>{c.impact_score}</td>
+                <td>{c.status}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </main>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
